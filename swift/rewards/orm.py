@@ -140,6 +140,7 @@ class ReActFormat(ORM):
 
 class CosineReward(ORM):
     # https://arxiv.org/abs/2502.03373
+<<<<<<< Updated upstream
     def __init__(self, args: Optional[Union['GRPOConfig', 'MegatronArguments']] = None, accuracy_orm=None):
         super().__init__(args)
         self.min_len_value_wrong = args.cosine_min_len_value_wrong
@@ -147,6 +148,31 @@ class CosineReward(ORM):
         self.min_len_value_correct = args.cosine_min_len_value_correct
         self.max_len_value_correct = args.cosine_max_len_value_correct
         self.max_len = args.cosine_max_len
+=======
+    """
+   检测生成文本里 n-gram 重复程度，并给负奖励（惩罚）。重复越多，惩罚越大。
+    
+    Args:
+        cosine_min_len_value_wrong: 生成错误答案时，最小长度对应的奖励值。
+        cosine_max_len_value_wrong: 生成错误答案时，最大长度对应的奖励值。
+        cosine_min_len_value_correct: 生成正确答案时，最小长度对应的奖励值。
+        cosine_max_len_value_correct: 生成正确答案时，最大长度对应的奖励值。
+        cosine_max_len: 生成文本的最大长度限制。
+        accuracy_orm: 准确率奖励函数。
+    """
+    def __init__(self,
+                 cosine_min_len_value_wrong: float = -0.5,
+                 cosine_max_len_value_wrong: float = 0.0,
+                 cosine_min_len_value_correct: float = 1.0,
+                 cosine_max_len_value_correct: float = 0.5,
+                 cosine_max_len: int = 1000,
+                 accuracy_orm=None):
+        self.min_len_value_wrong = cosine_min_len_value_wrong
+        self.max_len_value_wrong = cosine_max_len_value_wrong
+        self.min_len_value_correct = cosine_min_len_value_correct
+        self.max_len_value_correct = cosine_max_len_value_correct
+        self.max_len = cosine_max_len
+>>>>>>> Stashed changes
         self.accuracy_orm = accuracy_orm or MathAccuracy()
 
     @staticmethod
@@ -174,6 +200,13 @@ class CosineReward(ORM):
 
 
 class RepetitionPenalty(ORM):
+    """
+    检测生成文本里 n-gram 重复程度，并给负奖励（惩罚）。重复越多，惩罚越大。
+    
+    Args:
+        repetition_n_grams: 用于检测重复的 n-gram 大小。
+        repetition_max_penalty: 最大惩罚值，用于控制惩罚的强度。
+    """
     # https://arxiv.org/abs/2502.03373
     def __init__(self, args: Optional[Union['GRPOConfig', 'MegatronArguments']] = None, **kwargs):
         super().__init__(args)
@@ -182,6 +215,10 @@ class RepetitionPenalty(ORM):
 
     @staticmethod
     def zipngram(text: str, ngram_size: int):
+        """
+        text.lower().split()：转小写+按空格分词
+        zip(*[words[i:] for i in range(ngram_size)])：经典滑动窗口法，生成连续 n-gram 序列      
+        """
         words = text.lower().split()
         return zip(*[words[i:] for i in range(ngram_size)])
 
@@ -206,7 +243,7 @@ class RepetitionPenalty(ORM):
             for ng in self.zipngram(completion, self.ngram_size):
                 ngrams.add(ng)
                 total += 1
-
+            #  计算唯一n-gram在所有中的占比
             scaling = 1 - len(ngrams) / total
             reward = scaling * self.max_penalty
             rewards.append(reward)
