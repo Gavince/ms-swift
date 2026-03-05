@@ -692,9 +692,27 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         valid_samples = []
         valid_rewards_per_func = []
         origin_data = (inputs, rewards_per_func)
+        """
+        输入: 2 个 prompt（因为 8 / 4 = 2）
 
+        Rollout 第一轮：
+        prompt_A → [回答1, 回答2, 回答3, 回答4]  rewards=[1.0, 1.0, 1.0, 1.0] → std=0 ❌
+        prompt_B → [回答5, 回答6, 回答7, 回答8]  rewards=[0.9, 0.2, 0.6, 0.1] → std=0.34 ✅
+
+        valid_samples = [回答5,6,7,8]（只有4条，不够8条，继续）
+
+        Resample 一轮：
+        prompt_C → [回答9, 回答10, 回答11, 回答12] rewards=[0.7,0.3,0.8,0.2] → std=0.27 ✅
+
+        valid_samples = [回答5,6,7,8, 回答9,10,11,12]（8条，够了！）
+
+        最终 inputs（8条）= prompt_B 的4条 + prompt_C 的4条
+                        （prompt_A 的4条因 std=0 被彻底丢弃）
+        """
         while resample_count < self.max_resample_times:
+            # Step1: 计算每个样本所属"组"的rewards标准差
             rewards_std = self.compute_std(inputs, rewards_per_func)
+            # Step2: 筛选有效样本（std > 0 表示组内奖励有差异，有学习价值）
             valid_mask = (rewards_std > 0)
             all_inputs = gather_object(inputs)
             valid_samples.extend([inp for inp, mask in zip(all_inputs, valid_mask) if mask])
@@ -726,12 +744,14 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
     def compute_std(self, inputs: DataType, rewards_per_func: torch.Tensor) -> torch.Tensor:
         """Compute the standard deviation of the rewards per function."""
         device = self.accelerator.device
+         # 加权聚合各reward函数的分数
         rewards = (rewards_per_func * self.reward_weights.unsqueeze(0)).nansum(dim=1)
 
         mode = 'train' if self.model.training else 'eval'
         num_generations = self.num_generations if mode == 'train' else self.num_generations_eval
+        # 默认模式：固定分组，每组 num_generations 个样本
         if not self.dynamic_num_samples:
-            grouped_rewards = rewards.view(-1, num_generations)
+            grouped_rewards = rewards.view(-1, num_generations)# [num_prompts, num_generations]
             # Handle edge case when num_generations_eval=1
             if num_generations > 1:
                 group_rewards_std = grouped_rewards.std(dim=1).repeat_interleave(num_generations)
@@ -1112,11 +1132,25 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 entropy_mask = entropies >= entropy_threshold
 
         # apply the completion_mask to exclude loss and metrics for overlong completions
+        # * DAPO算法对截断长度进行惩罚，如果截断长度超过max_completion_length，则认为该样本是无效的，不参与损失计算
         if self.overlong_filter and any(truncated_mask):
             if all(truncated_mask):
                 logger.info('All completions are overlong and truncated, '
                             'resulting in NaN some values for some metrics (e.g., KL)')
             truncated_mask = truncated_mask.unsqueeze(-1).expand_as(completion_mask)
+            """
+            # completion_mask (原始):
+            # [[True,  True,  True,  False],   # 样本0: 正常，3个有效token
+            #  [True,  True,  False, False]]   # 样本1: 截断，2个有效token
+
+            # ~truncated_mask (取反后):
+            # [[True,  True,  True,  True],    # 样本0: 不截断 → 全True
+            #  [False, False, False, False]]   # 样本1: 截断 → 全False
+
+            # 按位AND后的新 completion_mask:
+            # [[True,  True,  True,  False],   # 样本0: 不变
+            #  [False, False, False, False]]   # 样本1: 全被屏蔽！
+            """
             completion_mask = completion_mask & (~truncated_mask)
 
         # Compute the KL divergence between the model and the reference model
@@ -1233,6 +1267,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             loss = (per_token_loss * completion_mask).sum() / (batch_size * self.max_completion_length)
         elif self.loss_type in ['cispo', 'dapo']:
             # CISPO and DAPO: Normalize by total completion tokens across all processes
+            # 所有有效token损失数之和/所有有效token数之和
             normalizer = inputs['num_items_in_batch'] / self.accelerator.num_processes
             loss = (per_token_loss * completion_mask).sum() / normalizer
         else:
