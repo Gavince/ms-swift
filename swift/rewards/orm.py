@@ -236,6 +236,19 @@ class RepetitionPenalty(ORM):
 
 
 class SoftOverlong(ORM):
+    """
+    超过最大长度后，越长惩罚越重，能更强地压制“无意义拖长”。
+
+    但要看你的目标：
+
+    更像论文原版：超过 L_max 后封顶 -1（稳定、可控）。
+    更强约束长度：不封顶（你现在这种），超长越多罚越狠，收敛到短回复更快。
+    我建议这样选：
+
+    如果你发现模型经常“刷长”、啰嗦、重复，不封顶更合适。
+    如果你发现训练不稳定、reward 波动大、其他 reward 被长度项淹没，建议封顶到 -1 或加一个下限（比如 -1.5）。
+    一句话：合理，但属于“更激进”的长度约束策略，是否最优取决于你当前数据分布和训练稳定性。
+    """
 
     def __init__(self, args: Optional[Union['GRPOConfig', 'MegatronArguments']] = None, **kwargs):
         super().__init__(args)
@@ -250,6 +263,13 @@ class SoftOverlong(ORM):
             completion_length = len(ids)
             expected_len = self.soft_max_length - self.soft_cache_length
             exceed_len = completion_length - expected_len
+            """
+            假设 soft_max_length=1000, soft_cache_length=200：
+            L=1000 → -1
+            L=1100 → -(1100-800)/200 = -1.5（小于 -1）
+            L=1200 → -2.0（更小）
+            所以你的判断是对的：这项在超出 soft_max_length 后会小于 -1。
+            """
             rewards.append(min(-exceed_len / self.soft_cache_length, 0))
         return rewards
 
