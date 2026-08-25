@@ -997,7 +997,16 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
         # apply the completion_mask to exclude loss and metrics for overlong completions
         # * DAPO算法对截断长度进行惩罚，如果截断长度超过max_completion_length，则认为该样本是无效的，不参与损失计算
+        # completion_mask: [batch_size, seq_len]
+        # True 表示该位置是 completion token，需要计算损失
+        # 例如: [[True, True, True, False], 
+        #        [True, True, False, False]]
+
+        # truncated_mask: [batch_size]  
+        # True 表示该样本的 completion 被截断（超过了最大长度限制）
+        # 例如: [False, True]  → 第0个正常，第1个被截断
         if self.overlong_filter and any(truncated_mask):
+            # 用户配置了 overlong_filter=True（DAPO 特性） 或 any(truncated_mask)：当前 batch 里至少有一个样本被截断
             if all(truncated_mask):
                 logger.info('All completions are overlong and truncated, '
                             'resulting in NaN some values for some metrics (e.g., KL)')
